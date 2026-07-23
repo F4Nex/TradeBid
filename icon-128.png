@@ -1,0 +1,76 @@
+// routes/rfqs.js
+const express = require('express');
+const { z } = require('zod');
+const { db, logAudit } = require('../db');
+const { requireAuth, requireRole, requireSameOrigin } = require('../middleware/auth');
+
+const router = express.Router();
+
+const rfqSchema = z.object({
+  title: z.string().trim().min(5).max(160),
+  trade: z.string().trim().min(2).max(60),
+  description: z.string().trim().min(20).max(4000),
+  budget_min: z.coerce.number().int().min(0).max(10_000_000).optional(),
+  budget_max: z.coerce.number().int().min(0).max(10_000_000).optional(),
+  timeline: z.string().trim().max(60).optional(),
+  city: z.string().trim().min(1).max(80),
+  zip: z.string().trim().regex(/^\d{5}(-\d{4})?$/, 'Enter a valid ZIP code.'),
+});
+
+router.post('/', requireAuth, requireRole('homeowner'), requireSameOrigin, (req, res) => {
+  const parsed = rfqSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Please check the job details.', details: parsed.error.flatten() });
+  }
+  const d = parsed.data;
+  const info = db.prepare(
+    `INSERT INTO rfqs (homeowner_id, title, trade, description, budget_min, budget_max, timeline, city, zip)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(req.user.sub, d.title, d.trade, d.description, d.budget_min ?? null, d.budget_max ?? null, d.timeline ?? null, d.city, d.zip);
+
+  logAudit(req.user.sub, 'rfq_created', 'rfq:' + info.lastInsertRowid);
+  res.status(201).json({ id: Number(info.lastInsertRowid) });
+});
+
+router.get('/mine', requireAuth, requireRole('homeowner'), (req, res) => {
+  const rows = db.prepare('SELECT * FROM rfqs WHERE homeowner_id = ? ORDER BY created_at DESC').all(req.user.sub);
+  res.json({ rfqs: rows });
+});
+
+// Public-ish summary list: city/zip/trade/budget-bucket only, no description,
+// no exact address. Anyone can see *that* jobs exist; only verified,
+// subscribed contractors get full detail + can bid (see /:id and /bids).
+router.get('/', (req, res) => {
+  const rows = db.prepare(
+    `SELECT id, title, trade, city, zip, timeline, status, created_at,
+            (SELECT COUNT(*) FROM bids WHERE bids.rfq_id = rfqs.id) AS bid_count
+     FROM rfqs WHERE status = 'open' ORDER BY created_at DESC LIMIT 100`
+  ).all();
+  res.json({ rfqs: rows });
+});
+
+function contractorCanAccessFullJobs(userId) {
+  const profile = db.prepare(
+    'SELECT verification_status, subscription_status FROM contractor_profiles WHERE user_id = ?'
+  ).get(userId);
+  return !!profile && profile.verification_status === 'verified' && profile.subscription_status === 'active';
+}
+
+router.get('/:id', requireAuth, (req, res) => {
+  const rfq = db.prepare('SELECT * FROM rfqs WHERE id = ?').get(req.params.id);
+  if (!rfq) return res.status(404).json({ error: 'Not found.' });
+
+  const isOwner = req.user.role === 'homeowner' && rfq.homeowner_id === req.user.sub;
+  const isAdmin = req.user.role === 'admin';
+  const isUnlockedContractor = req.user.role === 'contractor' && contractorCanAccessFullJobs(req.user.sub);
+
+  if (!isOwner && !isAdmin && !isUnlockedContractor) {
+    return res.status(403).json({
+      error: 'Full job details are for verified, subscribed contractors.',
+      code: 'SUBSCRIPTION_REQUIRED',
+    });
+  }
+  res.json({ rfq });
+});
+
+module.exports = router;

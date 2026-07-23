@@ -1,19 +1,27 @@
-# Copy this file to .env and fill in real values. Never commit .env.
-
-# Generate with: node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
-JWT_SECRET=
-
-# The exact origin your frontend is served from (no trailing slash).
-# This MUST match exactly, or same-origin form submissions (signup, login,
-# posting jobs, bidding) will be rejected as cross-site requests.
-ALLOWED_ORIGIN=http://localhost:3000
-
-NODE_ENV=development
-PORT=3000
-
-# Optional: automatically create/promote an admin account on server boot.
-# Useful on hosts where you don't have reliable shell access (e.g. Render's
-# free tier). Safe to leave set permanently — see db/seedAdmin.js.
-SEED_ADMIN_EMAIL=
-SEED_ADMIN_PASSWORD=
-SEED_ADMIN_NAME=
+{
+  "name": "tradebid-server",
+  "version": "1.0.0",
+  "description": "TradeBid backend — RFQ marketplace API with contractor LLC/insurance verification",
+  "main": "server.js",
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "seed:admin": "node scripts/seed-admin.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.0",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.2.0",
+    "zod": "^4.4.3"
+  }
+}

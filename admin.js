@@ -1,89 +1,90 @@
-// db/index.js
-// Uses Node's built-in node:sqlite (stable-enough for launch; swap the
-// DSN for Postgres later with zero change to route code if you keep
-// queries this simple — see README "Growing past SQLite").
-const { DatabaseSync } = require('node:sqlite');
+require('dotenv').config();
+const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
+const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
-const fs = require('fs');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+const { attachUser } = require('./middleware/auth');
+const { seedAdminIfConfigured } = require('./db/seedAdmin');
+const authRoutes = require('./routes/auth');
+const contractorRoutes = require('./routes/contractor');
+const rfqRoutes = require('./routes/rfqs');
+const bidRoutes = require('./routes/bids');
+const adminRoutes = require('./routes/admin');
 
-const db = new DatabaseSync(path.join(DATA_DIR, 'tradebid.db'));
+const app = express();
 
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
+// Render/Railway/etc sit behind a reverse proxy — needed for correct
+// client IPs (rate limiting) and secure-cookie detection.
+app.set('trust proxy', 1);
 
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('homeowner','contractor','admin')),
-    name TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    failed_login_count INTEGER NOT NULL DEFAULT 0,
-    locked_until TEXT
-  );
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'fonts.googleapis.com'],
+      fontSrc: ["'self'", 'fonts.gstatic.com'],
+      // scriptSrc stays locked to same-origin FILES only — an attacker who
+      // manages to inject a <script>...</script> tag or a javascript: URL
+      // (e.g. via a stored-XSS bug) still can't get it to execute.
+      scriptSrc: ["'self'"],
+      // The current UI still uses onclick="" / onsubmit="" attributes
+      // throughout index.html, which CSP treats as a separate surface from
+      // scriptSrc. Allowing it here is a deliberate, narrower trade-off than
+      // a blanket 'unsafe-inline' on scriptSrc. TODO before scaling this
+      // past an MVP: refactor the onclick attributes to addEventListener
+      // with event delegation (see README "Hardening the CSP"), then
+      // remove this line entirely for defense-in-depth against XSS.
+      scriptSrcAttr: ["'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      manifestSrc: ["'self'"],
+      workerSrc: ["'self'"],
+    },
+  },
+  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+}));
 
-  CREATE TABLE IF NOT EXISTS contractor_profiles (
-    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    business_name TEXT NOT NULL,
-    state_of_registration TEXT NOT NULL,
-    entity_control_number TEXT NOT NULL,
-    trades TEXT NOT NULL DEFAULT '[]',
-    service_radius_miles INTEGER NOT NULL DEFAULT 50,
-    coi_filename TEXT,
-    coi_uploaded_at TEXT,
-    coi_expires_on TEXT,
-    verification_status TEXT NOT NULL DEFAULT 'pending'
-      CHECK(verification_status IN ('pending','verified','rejected','expired')),
-    verification_notes TEXT,
-    verified_at TEXT,
-    verified_by INTEGER REFERENCES users(id),
-    subscription_status TEXT NOT NULL DEFAULT 'inactive'
-      CHECK(subscription_status IN ('inactive','active','past_due','canceled'))
-  );
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'http://localhost:3000';
+app.use(cors({ origin: allowedOrigin, credentials: true }));
 
-  CREATE TABLE IF NOT EXISTS rfqs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    homeowner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    title TEXT NOT NULL,
-    trade TEXT NOT NULL,
-    description TEXT NOT NULL,
-    budget_min INTEGER,
-    budget_max INTEGER,
-    timeline TEXT,
-    city TEXT NOT NULL,
-    zip TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','awarded','closed')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+app.use(express.json({ limit: '1mb' }));
+app.use(cookieParser());
+app.use(attachUser);
 
-  CREATE TABLE IF NOT EXISTS bids (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    rfq_id INTEGER NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
-    contractor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    amount INTEGER NOT NULL,
-    message TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(rfq_id, contractor_id)
-  );
+// Global request ceiling; auth routes layer a stricter limit on top.
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 300 }));
 
-  CREATE TABLE IF NOT EXISTS audit_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    actor_id INTEGER,
-    action TEXT NOT NULL,
-    target TEXT,
-    detail TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-`);
+app.use('/api/auth', authRoutes);
+app.use('/api/contractor', contractorRoutes);
+app.use('/api/rfqs', rfqRoutes);
+app.use('/api/bids', bidRoutes);
+app.use('/api/admin', adminRoutes);
 
-function logAudit(actorId, action, target, detail) {
-  db.prepare(
-    `INSERT INTO audit_log (actor_id, action, target, detail) VALUES (?, ?, ?, ?)`
-  ).run(actorId ?? null, action, target ?? null, detail ? JSON.stringify(detail) : null);
-}
+app.get('/api/health', (req, res) => res.json({ ok: true }));
 
-module.exports = { db, logAudit };
+// Serve the front-end as static files from the same origin — simplest,
+// most secure deploy shape (no cross-origin cookie headaches).
+app.use(express.static(path.join(__dirname, '..', 'public')));
+app.get('/*splat', (req, res, next) => {
+  if (req.path.startsWith('/api/')) return next();
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+});
+
+// Centralized error handler — never leak stack traces to the client.
+app.use((err, req, res, next) => {
+  console.error(err);
+  if (err.message?.includes('Only PDF')) {
+    return res.status(400).json({ error: err.message });
+  }
+  res.status(500).json({ error: 'Something went wrong on our end.' });
+});
+
+seedAdminIfConfigured();
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`TradeBid server listening on :${PORT}`));
+
+module.exports = app;

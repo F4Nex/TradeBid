@@ -1,22 +1,103 @@
-{
-  "name": "TradeBid — Verified Contractor Marketplace",
-  "short_name": "TradeBid",
-  "description": "Post a job free. Verified, insured contractors bid.",
-  "start_url": "/",
-  "scope": "/",
-  "display": "standalone",
-  "background_color": "#FAF7F0",
-  "theme_color": "#16241D",
-  "orientation": "portrait-primary",
-  "icons": [
-    { "src": "/icons/icon-72.png", "sizes": "72x72", "type": "image/png" },
-    { "src": "/icons/icon-96.png", "sizes": "96x96", "type": "image/png" },
-    { "src": "/icons/icon-128.png", "sizes": "128x128", "type": "image/png" },
-    { "src": "/icons/icon-144.png", "sizes": "144x144", "type": "image/png" },
-    { "src": "/icons/icon-152.png", "sizes": "152x152", "type": "image/png" },
-    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/icon-384.png", "sizes": "384x384", "type": "image/png" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
-  ]
-}
+// routes/contractor.js
+const express = require('express');
+const path = require('path');
+const crypto = require('crypto');
+const multer = require('multer');
+const { z } = require('zod');
+const { db, logAudit } = require('../db');
+const { requireAuth, requireRole, requireSameOrigin } = require('../middleware/auth');
+
+const router = express.Router();
+
+const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
+
+const storage = multer.diskStorage({
+  destination: UPLOAD_DIR,
+  filename: (req, file, cb) => {
+    // Random filename — never trust or reuse the client's original filename
+    // (path traversal / overwrite risk), keep extension only.
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, crypto.randomUUID() + ext);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    const okExt = ['.pdf'].includes(path.extname(file.originalname).toLowerCase());
+    const okMime = file.mimetype === 'application/pdf';
+    if (!okExt || !okMime) return cb(new Error('Only PDF certificates are accepted.'));
+    cb(null, true);
+  },
+});
+
+const VALID_TRADES = [
+  'Roofing', 'Plumbing', 'Electrical', 'HVAC', 'Remodel / GC',
+  'Concrete', 'Painting', 'Landscaping', 'Fencing / Decks',
+];
+
+const profileSchema = z.object({
+  business_name: z.string().trim().min(2).max(200),
+  state_of_registration: z.string().trim().min(2).max(60),
+  entity_control_number: z.string().trim().min(1).max(40),
+  trades: z.array(z.enum(VALID_TRADES)).min(1).max(VALID_TRADES.length),
+  service_radius_miles: z.coerce.number().int().min(5).max(500).default(50),
+});
+
+// Submit / resubmit verification. Resets status to 'pending' so admins re-review
+// any edited business info, even if a COI was previously approved.
+router.post(
+  '/verification',
+  requireAuth,
+  requireRole('contractor'),
+  requireSameOrigin,
+  upload.single('coi'),
+  (req, res) => {
+    let fields;
+    try {
+      fields = profileSchema.parse({
+        ...req.body,
+        trades: JSON.parse(req.body.trades || '[]'),
+      });
+    } catch (err) {
+      return res.status(400).json({ error: 'Please check the business details you entered.' });
+    }
+
+    const coiFilename = req.file ? req.file.filename : null;
+
+    db.prepare(
+      `UPDATE contractor_profiles SET
+         business_name = ?, state_of_registration = ?, entity_control_number = ?,
+         trades = ?, service_radius_miles = ?,
+         coi_filename = COALESCE(?, coi_filename),
+         coi_uploaded_at = CASE WHEN ? IS NOT NULL THEN datetime('now') ELSE coi_uploaded_at END,
+         verification_status = 'pending', verification_notes = NULL,
+         verified_at = NULL, verified_by = NULL
+       WHERE user_id = ?`
+    ).run(
+      fields.business_name, fields.state_of_registration, fields.entity_control_number,
+      JSON.stringify(fields.trades), fields.service_radius_miles,
+      coiFilename, coiFilename,
+      req.user.sub
+    );
+
+    logAudit(req.user.sub, 'verification_submitted', 'contractor:' + req.user.sub, {
+      business_name: fields.business_name,
+    });
+
+    res.status(202).json({
+      status: 'pending',
+      message: 'Submitted for review. We manually cross-check every entity against your state\'s Secretary of State business registry before approving.',
+    });
+  }
+);
+
+router.get('/verification/status', requireAuth, requireRole('contractor'), (req, res) => {
+  const row = db
+    .prepare('SELECT verification_status, verification_notes, subscription_status FROM contractor_profiles WHERE user_id = ?')
+    .get(req.user.sub);
+  res.json(row || { verification_status: 'pending', subscription_status: 'inactive' });
+});
+
+module.exports = router;

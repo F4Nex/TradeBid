@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="TradeBid">
-<link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/icons/icon-180.png">
-<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <title>TradeBid — Post the Job. Verified Contractors Bid.</title>
 <meta name="description" content="TradeBid is the RFQ marketplace for home projects. Homeowners post jobs free; LLC-registered, insured contractors subscribe to bid. No lead fees, no commissions.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -44,6 +44,12 @@
   button{font-family:inherit}
 
   header{position:sticky;top:0;z-index:60;background:rgba(250,247,240,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding-top:env(safe-area-inset-top)}
+  .demo-banner{position:sticky;top:64px;z-index:55;background:#1F2937;color:#E8EBEF;display:flex;align-items:center;gap:14px;padding:10px 20px;font-size:12.5px;line-height:1.5}
+  .demo-banner b{color:var(--sun)}
+  .demo-banner a{color:#9FD8FF;text-decoration:underline}
+  .demo-banner button{margin-left:auto;background:none;border:none;color:#9AA6A0;font-size:20px;cursor:pointer;line-height:1;flex:none;padding:4px}
+  .demo-banner button:hover{color:#fff}
+  @media (max-width:700px){ .demo-banner{top:58px} }
   .nav{display:flex;align-items:center;gap:20px;height:64px;position:relative}
   .logo{font-family:var(--disp);font-weight:700;font-size:22px;color:var(--ink);text-decoration:none;display:flex;align-items:center;gap:9px;cursor:pointer;background:none;border:none}
   .logo .mark{width:26px;height:26px;border-radius:50%;background:var(--brand);position:relative;flex:none}
@@ -300,6 +306,11 @@
     </button>
   </div>
 </header>
+
+<div class="demo-banner" id="demoBanner" style="display:none">
+  <span><b>Static demo</b> — no real backend is running. Everything you do here (sign up, post a job, approve a contractor) is saved only in your browser's local storage, not sent anywhere. See the README for deploying the real backend.</span>
+  <button onclick="document.getElementById('demoBanner').style.display='none'" aria-label="Dismiss">×</button>
+</div>
 
 <main id="view-home" class="view active">
   <section class="hero">
@@ -566,6 +577,7 @@
 <main id="view-login" class="view">
   <section><div class="wrap authbox">
     <h2 class="center">Log in</h2>
+    <div id="demoQuickLogin" style="display:none;margin-top:14px"></div>
     <form class="card-form" onsubmit="return doLogin(event)">
       <label for="li-email">Email</label><input id="li-email" type="email" required autocomplete="email">
       <label for="li-pass">Password</label><input id="li-pass" type="password" required autocomplete="current-password">
@@ -657,6 +669,7 @@
   </div>
 </footer>
 
-<script src="/app.js" defer></script>
+<script src="demo-backend.js" defer></script>
+<script src="app.js" defer></script>
 </body>
 </html>

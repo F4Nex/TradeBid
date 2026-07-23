@@ -1,6 +1,21 @@
-node_modules/
-.env
-data/
-uploads/*.pdf
-!uploads/.gitkeep
-*.log
+// One-time setup: create your first admin (staff) account.
+// Run with:  node scripts/seed-admin.js you@yourcompany.com "a-strong-password" "Your Name"
+//
+// If you're deploying somewhere without reliable shell access (e.g. Render's
+// free tier), set SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD / SEED_ADMIN_NAME as
+// environment variables instead — the server does this automatically on
+// boot. See db/seedAdmin.js.
+require('dotenv').config();
+const { createOrPromoteAdmin } = require('../db/seedAdmin');
+
+const [,, email, password, name] = process.argv;
+if (!email || !password || !name) {
+  console.log('Usage: node scripts/seed-admin.js <email> <password> "<name>"');
+  process.exit(1);
+}
+if (password.length < 10) {
+  console.log('Password must be at least 10 characters.');
+  process.exit(1);
+}
+
+createOrPromoteAdmin(email, password, name);
