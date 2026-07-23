@@ -1,0 +1,382 @@
+async function api(path, opts={}){
+  const res = await fetch('/api'+path, {
+    credentials:'include',
+    headers: opts.body && !(opts.body instanceof FormData) ? {'Content-Type':'application/json'} : undefined,
+    ...opts,
+  });
+  let data=null;
+  try{ data = await res.json(); }catch{}
+  if(!res.ok) throw { status:res.status, ...data };
+  return data;
+}
+
+const TRADES=['Roofing','Plumbing','Electrical','HVAC','Remodel / GC','Concrete','Painting','Landscaping','Fencing / Decks'];
+const TRADE_COLORS={Roofing:'#E15A3E',Plumbing:'#2E6E9E',Electrical:'#C98515',HVAC:'#6B4FA0','Remodel / GC':'#0E7C5A',Concrete:'#5D685F',Painting:'#B14C8C',Landscaping:'#3E8F4C','Fencing / Decks':'#8A5A2E'};
+function abbr(t){ return t.split(/[\s/]+/).map(w=>w[0]).join('').slice(0,2).toUpperCase(); }
+
+let currentUser=null;
+
+async function go(v){
+  document.querySelectorAll('.view').forEach(el=>el.classList.remove('active'));
+  const el=document.getElementById('view-'+v);
+  if(!el) return;
+  el.classList.add('active');
+  document.querySelectorAll('.nav-links button').forEach(b=>b.classList.toggle('active',b.dataset.v===v));
+  closeMenu();
+  window.scrollTo({top:0});
+  if(v==='post') renderPostGate();
+  if(v==='board') loadBoard();
+  if(v==='pros') loadPros();
+  if(v==='dashboard') loadDashboard();
+  if(v==='admin') loadAdminQueue();
+  if(v==='signup-contractor') renderContractorSignupStep();
+}
+
+function toggleMenu(){
+  const menu=document.getElementById('navLinks');
+  const btn=document.getElementById('hamburger');
+  const open=menu.classList.toggle('open');
+  btn.classList.toggle('open',open);
+  btn.setAttribute('aria-expanded', open?'true':'false');
+}
+function closeMenu(){
+  document.getElementById('navLinks').classList.remove('open');
+  document.getElementById('hamburger').classList.remove('open');
+  document.getElementById('hamburger').setAttribute('aria-expanded','false');
+}
+
+function renderNav(){
+  const el=document.getElementById('navRight');
+  if(!currentUser){
+    el.innerHTML = `<a class="btn btn-ghost btn-sm" onclick="go('login')">Log In</a><a class="btn btn-brand btn-sm" onclick="go('signup-contractor')">Contractor Sign-Up</a>`;
+    return;
+  }
+  const dashBtn = currentUser.role==='contractor' ? `<button class="who-pill" onclick="go('dashboard')" style="cursor:pointer">Dashboard</button>`
+                : currentUser.role==='admin' ? `<button class="who-pill" onclick="go('admin')" style="cursor:pointer">Admin Queue</button>` : '';
+  el.innerHTML = `${dashBtn}<span class="who-pill">Hi, <b>${currentUser.name}</b> · ${currentUser.role}</span><a class="btn btn-ghost btn-sm" onclick="doLogout()">Log Out</a>`;
+}
+
+async function refreshSession(){
+  try{ const d = await api('/auth/me'); currentUser = d.user; }
+  catch{ currentUser = null; }
+  renderNav();
+}
+
+async function doSignup(e, role){
+  e.preventDefault();
+  const isContractor = role==='contractor';
+  const name = document.getElementById(isContractor?'cu-name':'su-name').value;
+  const email = document.getElementById(isContractor?'cu-email':'su-email').value;
+  const password = document.getElementById(isContractor?'cu-pass':'su-pass').value;
+  const msgEl = document.getElementById(isContractor?'cuMsg':'signupMsg');
+  try{
+    const d = await api('/auth/signup',{method:'POST',body:JSON.stringify({name,email,password,role})});
+    currentUser = d.user; renderNav();
+    if(isContractor){ renderContractorSignupStep(); }
+    else { go('post'); }
+  }catch(err){
+    msgEl.className='msg err show';
+    msgEl.textContent = err.error || 'Could not create account.';
+  }
+  return false;
+}
+
+async function doLogin(e){
+  e.preventDefault();
+  const email=document.getElementById('li-email').value;
+  const password=document.getElementById('li-pass').value;
+  const msgEl=document.getElementById('loginMsg');
+  try{
+    const d=await api('/auth/login',{method:'POST',body:JSON.stringify({email,password})});
+    currentUser=d.user; renderNav();
+    go(currentUser.role==='contractor'?'dashboard':currentUser.role==='admin'?'admin':'post');
+  }catch(err){
+    msgEl.className='msg err show';
+    msgEl.textContent = err.error || 'Invalid email or password.';
+  }
+  return false;
+}
+
+async function doLogout(){
+  await api('/auth/logout',{method:'POST'});
+  currentUser=null; renderNav(); go('home');
+}
+
+function renderTradeStrip(){
+  document.getElementById('tradeStrip').innerHTML = TRADES.slice(0,6).map(t=>
+    `<span class="trade-pill" onclick="go('board')"><span class="ic" style="background:${TRADE_COLORS[t]}">${abbr(t)}</span>${t}</span>`
+  ).join('');
+}
+
+function renderPostGate(){
+  const gate=document.getElementById('postGate');
+  const form=document.getElementById('rfqForm');
+  if(!currentUser){
+    gate.innerHTML=`<div class="card-form" style="text-align:center"><h3>Log in to post a job</h3><p class="sub" style="margin:10px auto">Posting is free — you just need an account so contractors' bids come back to you.</p><div class="hero-actions" style="justify-content:center;margin-top:18px"><a class="btn btn-brand" onclick="go('signup')">Create Free Account</a><a class="btn btn-ghost" onclick="go('login')">Log In</a></div></div>`;
+    form.style.display='none';
+    return;
+  }
+  if(currentUser.role!=='homeowner'){
+    gate.innerHTML=`<div class="card-form" style="text-align:center"><h3>This account is a contractor account</h3><p class="sub" style="margin:10px auto">Log in with a homeowner account to post a job, or create a new one.</p></div>`;
+    form.style.display='none';
+    return;
+  }
+  gate.innerHTML='';
+  form.style.display='block';
+  if(!document.getElementById('tradeChips').children.length){
+    document.getElementById('tradeChips').innerHTML = TRADES.map(t=>`<span class="chip" data-t="${t}">${t}</span>`).join('');
+    document.getElementById('tradeChips').addEventListener('click',e=>{
+      if(!e.target.classList.contains('chip'))return;
+      document.querySelectorAll('#tradeChips .chip').forEach(c=>c.classList.remove('on'));
+      e.target.classList.add('on');
+    });
+  }
+}
+
+async function submitRFQ(e){
+  e.preventDefault();
+  const btn=document.getElementById('rfqSubmitBtn'); const msgEl=document.getElementById('rfqMsg');
+  const tradeChip=document.querySelector('#tradeChips .chip.on');
+  if(!tradeChip){ msgEl.className='msg err show'; msgEl.textContent='Pick a trade category.'; return false; }
+  btn.disabled=true; btn.textContent='Publishing…';
+  try{
+    await api('/rfqs',{method:'POST',body:JSON.stringify({
+      title:document.getElementById('ptitle').value,
+      trade:tradeChip.dataset.t,
+      description:document.getElementById('pdesc').value,
+      budget_min:document.getElementById('bmin').value||undefined,
+      budget_max:document.getElementById('bmax').value||undefined,
+      timeline:document.getElementById('tline').value,
+      city:document.getElementById('city').value,
+      zip:document.getElementById('zip').value,
+    })});
+    msgEl.className='msg ok show';
+    msgEl.innerHTML='<b>RFQ published.</b> It is now visible to verified contractors. We will notify you by email as bids come in.';
+    document.getElementById('rfqForm').reset();
+    document.querySelectorAll('#tradeChips .chip').forEach(c=>c.classList.remove('on'));
+  }catch(err){
+    msgEl.className='msg err show';
+    msgEl.textContent = err.error || 'Could not publish. Check the form and try again.';
+  }
+  btn.disabled=false; btn.textContent='Publish RFQ';
+  return false;
+}
+
+let boardFilter='All trades';
+async function loadBoard(){
+  const filtersEl=document.getElementById('boardFilters');
+  if(!filtersEl.children.length){
+    filtersEl.innerHTML = ['All trades',...TRADES].map(t=>`<span class="chip ${t==='All trades'?'on':''}" data-t="${t}">${t}</span>`).join('');
+    filtersEl.addEventListener('click',e=>{
+      if(!e.target.classList.contains('chip'))return;
+      filtersEl.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));
+      e.target.classList.add('on');
+      boardFilter=e.target.dataset.t;
+      renderBoard();
+    });
+  }
+  try{
+    const d=await api('/rfqs');
+    window._jobs=d.rfqs;
+    renderBoard();
+  }catch(err){
+    document.getElementById('board').innerHTML='<p class="helper">Could not load jobs right now.</p>';
+  }
+}
+
+function canSeeFullJob(){
+  return currentUser && currentUser.role==='contractor' && window._contractorUnlocked===true;
+}
+
+async function checkUnlockStatus(){
+  if(currentUser && currentUser.role==='contractor'){
+    try{
+      const s=await api('/contractor/verification/status');
+      window._contractorUnlocked = s.verification_status==='verified' && s.subscription_status==='active';
+    }catch{ window._contractorUnlocked=false; }
+  } else { window._contractorUnlocked=false; }
+}
+
+async function renderBoard(){
+  await checkUnlockStatus();
+  const el=document.getElementById('board');
+  const jobs=(window._jobs||[]).filter(j=>boardFilter==='All trades'||j.trade===boardFilter);
+  if(!jobs.length){ el.innerHTML='<p class="helper">No open jobs in this category yet.</p>'; return; }
+  const unlocked = canSeeFullJob() || (currentUser && currentUser.role==='homeowner');
+  el.innerHTML = jobs.map(j=>`
+    <article class="job ${unlocked?'':'locked'}">
+      <div class="job-head"><span class="rfqid">RFQ #${String(j.id).padStart(5,'0')}</span><span class="count">${j.bid_count} BID${j.bid_count===1?'':'S'}</span></div>
+      <div class="job-body">
+        <div class="job-title">${escapeHtml(j.title)}</div>
+        <div class="job-meta lockable">
+          <div><b>Trade</b>${escapeHtml(j.trade)}</div>
+          <div><b>Location</b>${escapeHtml(j.city)}, ${escapeHtml(j.zip)}</div>
+          <div><b>Timeline</b>${escapeHtml(j.timeline||'Flexible')}</div>
+          <div><b>Posted</b>${new Date(j.created_at).toLocaleDateString()}</div>
+        </div>
+        <div class="job-foot lockable">
+          <span class="status-pill status-verified">OPEN</span>
+          <a class="btn btn-ink btn-sm" onclick="viewJob(${j.id})">View Details</a>
+        </div>
+      </div>
+      ${unlocked?'':`<div class="lock-overlay"><span style="font-size:22px">🔒</span><p>FULL SCOPE &amp; BIDDING ARE FOR VERIFIED, SUBSCRIBED CONTRACTORS</p><a class="btn btn-brand btn-sm" onclick="go('signup-contractor')">Get Verified</a></div>`}
+    </article>`).join('');
+}
+
+async function viewJob(id){
+  try{
+    const d=await api('/rfqs/'+id);
+    alert(`${d.rfq.title}\n\n${d.rfq.description}\n\nBudget: $${d.rfq.budget_min||'—'} – $${d.rfq.budget_max||'—'}\nLocation: ${d.rfq.city}, ${d.rfq.zip}`);
+  }catch(err){
+    if(err.code==='SUBSCRIPTION_REQUIRED'){ go('signup-contractor'); }
+    else if(err.status===401){ go('login'); }
+    else alert(err.error||'Could not load job.');
+  }
+}
+
+function escapeHtml(s){ const d=document.createElement('div'); d.textContent=s??''; return d.innerHTML; }
+
+const SAMPLE_PROS=[
+ {name:'Ridgeline Roofing LLC',trade:'ROOFING · KINGSPORT, TN',jobs:41,rating:'4.9',color:'#E15A3E'},
+ {name:'Holston Electric Co. LLC',trade:'ELECTRICAL · BRISTOL, TN',jobs:63,rating:'5.0',color:'#C98515'},
+ {name:'Boone Creek Builders LLC',trade:'REMODEL / GC · JOHNSON CITY, TN',jobs:27,rating:'4.8',color:'#0E7C5A'},
+ {name:'Watauga Concrete Works LLC',trade:'CONCRETE · BLOUNTVILLE, TN',jobs:35,rating:'4.9',color:'#5D685F'},
+];
+function loadPros(){
+  document.getElementById('pros').innerHTML = SAMPLE_PROS.map(p=>`
+    <article class="pro">
+      <div class="pro-hero" style="background:linear-gradient(135deg, ${p.color}, #16241D)">
+        <div class="badge"><span class="dot"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><b>Verified</b></div>
+      </div>
+      <div class="pro-body">
+        <div class="pro-name">${p.name}</div>
+        <div class="pro-trade">${p.trade}</div>
+        <div class="pro-stats"><span><b>${p.jobs}</b> jobs won</span><span><b>${p.rating}</b> ★ rating</span></div>
+      </div>
+    </article>`).join('');
+}
+
+function renderContractorSignupStep(){
+  const step1=document.getElementById('contractorAccountStep');
+  const step2=document.getElementById('contractorVerifyStep');
+  if(currentUser && currentUser.role==='contractor'){
+    step1.style.display='none'; step2.style.display='block';
+    if(!document.getElementById('verifyChips').children.length){
+      document.getElementById('verifyChips').innerHTML = TRADES.map(t=>`<span class="chip" data-t="${t}">${t}</span>`).join('');
+      document.getElementById('verifyChips').addEventListener('click',e=>{
+        if(!e.target.classList.contains('chip'))return;
+        e.target.classList.toggle('on');
+      });
+    }
+    document.getElementById('v-coi').addEventListener('change',e=>{
+      document.getElementById('coiFileName').textContent = e.target.files[0]?('Selected: '+e.target.files[0].name):'';
+    });
+    refreshVerifyStatusLine();
+  } else {
+    step1.style.display='block'; step2.style.display='none';
+  }
+}
+
+async function refreshVerifyStatusLine(){
+  const line=document.getElementById('verifyStatusLine');
+  try{
+    const s=await api('/contractor/verification/status');
+    const map={pending:'status-pending',verified:'status-verified',rejected:'status-rejected'};
+    line.innerHTML = `Current status: <span class="status-pill ${map[s.verification_status]||'status-pending'}">${s.verification_status}</span>`;
+  }catch{ line.textContent=''; }
+}
+
+async function submitVerification(e){
+  e.preventDefault();
+  const btn=document.getElementById('verifySubmitBtn'); const msgEl=document.getElementById('verifyMsg');
+  const trades=[...document.querySelectorAll('#verifyChips .chip.on')].map(c=>c.dataset.t);
+  if(!trades.length){ msgEl.className='msg err show'; msgEl.textContent='Select at least one trade.'; return false; }
+  const fd=new FormData();
+  fd.append('business_name',document.getElementById('v-bizname').value);
+  fd.append('state_of_registration',document.getElementById('v-state').value);
+  fd.append('entity_control_number',document.getElementById('v-num').value);
+  fd.append('service_radius_miles',document.getElementById('v-radius').value);
+  fd.append('trades',JSON.stringify(trades));
+  const file=document.getElementById('v-coi').files[0];
+  if(file) fd.append('coi',file);
+  btn.disabled=true; btn.textContent='Submitting…';
+  try{
+    const d=await api('/contractor/verification',{method:'POST',body:fd});
+    msgEl.className='msg ok show';
+    msgEl.innerHTML=`<b>Submitted.</b> ${d.message}`;
+    refreshVerifyStatusLine();
+  }catch(err){
+    msgEl.className='msg err show';
+    msgEl.textContent = err.error || 'Could not submit. Check the form and try again.';
+  }
+  btn.disabled=false; btn.textContent='Submit for Review';
+  return false;
+}
+
+async function loadDashboard(){
+  const el=document.getElementById('dashboardBody');
+  if(!currentUser || currentUser.role!=='contractor'){ el.innerHTML='<p class="helper">Log in with a contractor account to see this.</p>'; return; }
+  try{
+    const s=await api('/contractor/verification/status');
+    const map={pending:'status-pending',verified:'status-verified',rejected:'status-rejected'};
+    el.innerHTML=`
+      <p><b>Verification:</b> <span class="status-pill ${map[s.verification_status]}">${s.verification_status}</span></p>
+      <p style="margin-top:10px"><b>Subscription:</b> <span class="status-pill ${s.subscription_status==='active'?'status-verified':'status-pending'}">${s.subscription_status}</span></p>
+      ${s.verification_notes?`<p class="helper" style="margin-top:10px">Reviewer note: ${escapeHtml(s.verification_notes)}</p>`:''}
+      <div class="form-foot" style="margin-top:20px"><p>Need to update your business info or re-upload your COI?</p><a class="btn btn-ghost" onclick="go('signup-contractor')">Edit Verification</a></div>
+    `;
+  }catch{ el.innerHTML='<p class="helper">Could not load status.</p>'; }
+}
+
+async function loadAdminQueue(){
+  const el=document.getElementById('adminQueue');
+  if(!currentUser || currentUser.role!=='admin'){ el.innerHTML='<p class="helper">Admin access required.</p>'; return; }
+  try{
+    const d=await api('/admin/verification-queue');
+    if(!d.queue.length){ el.innerHTML='<div class="queue-empty">Queue is empty — nothing pending review.</div>'; return; }
+    el.innerHTML = d.queue.map(q=>`
+      <div class="queue-item">
+        <div class="queue-head">
+          <div><h3>${escapeHtml(q.business_name)}</h3><p class="helper">${escapeHtml(q.name)} · ${escapeHtml(q.email)}</p></div>
+          <span class="status-pill status-pending">pending review</span>
+        </div>
+        <div class="queue-meta">
+          <div><b>State</b>${escapeHtml(q.state_of_registration)}</div>
+          <div><b>Control #</b>${escapeHtml(q.entity_control_number)}</div>
+          <div><b>Trades</b>${q.trades.join(', ')}</div>
+          <div><b>Radius</b>${q.service_radius_miles} mi</div>
+        </div>
+        <div class="queue-actions">
+          ${q.registry_search_url?`<a class="btn btn-ghost btn-sm" href="${q.registry_search_url}" target="_blank" rel="noopener">Open State Registry Search ↗</a>`:'<span class="helper">No registry link mapped for this state yet — search manually.</span>'}
+          ${q.coi_url?`<a class="btn btn-ghost btn-sm" href="${q.coi_url}" target="_blank" rel="noopener">Open COI PDF ↗</a>`:'<span class="helper">No COI uploaded</span>'}
+          <a class="btn btn-brand btn-sm" onclick="decide(${q.user_id},'verified')">Approve</a>
+          <a class="btn btn-ghost btn-sm" onclick="decide(${q.user_id},'rejected')">Reject</a>
+        </div>
+      </div>
+    `).join('');
+  }catch{ el.innerHTML='<p class="helper">Could not load queue.</p>'; }
+}
+
+async function decide(userId, decision){
+  const notes = decision==='rejected' ? prompt('Reason for rejection (shown to the contractor):') : prompt('Optional note for your records:');
+  try{
+    await api(`/admin/verification/${userId}/decision`,{method:'POST',body:JSON.stringify({decision,notes:notes||undefined})});
+    loadAdminQueue();
+  }catch(err){ alert(err.error||'Could not save decision.'); }
+}
+
+(async function boot(){
+  renderTradeStrip();
+  await refreshSession();
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('/service-worker.js').catch(()=>{ /* non-fatal */ });
+  }
+  document.addEventListener('click',(e)=>{
+    const menu=document.getElementById('navLinks');
+    const btn=document.getElementById('hamburger');
+    if(menu.classList.contains('open') && !menu.contains(e.target) && !btn.contains(e.target)){
+      closeMenu();
+    }
+  });
+  document.addEventListener('keydown',(e)=>{ if(e.key==='Escape') closeMenu(); });
+})();
