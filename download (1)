@@ -1,77 +1,21 @@
-// middleware/auth.js
-const jwt = require('jsonwebtoken');
+// One-time setup: create your first admin (staff) account.
+// Run with:  node scripts/seed-admin.js you@yourcompany.com "a-strong-password" "Your Name"
+//
+// If you're deploying somewhere without reliable shell access (e.g. Render's
+// free tier), set SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD / SEED_ADMIN_NAME as
+// environment variables instead — the server does this automatically on
+// boot. See db/seedAdmin.js.
+require('dotenv').config();
+const { createOrPromoteAdmin } = require('../db/seedAdmin');
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET || JWT_SECRET.length < 32) {
-  throw new Error(
-    'JWT_SECRET is missing or too short. Set a random 32+ char secret in your .env file. ' +
-    'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"'
-  );
+const [,, email, password, name] = process.argv;
+if (!email || !password || !name) {
+  console.log('Usage: node scripts/seed-admin.js <email> <password> "<name>"');
+  process.exit(1);
+}
+if (password.length < 10) {
+  console.log('Password must be at least 10 characters.');
+  process.exit(1);
 }
 
-const COOKIE_NAME = 'tb_session';
-
-function signSession(user) {
-  return jwt.sign(
-    { sub: user.id, role: user.role, name: user.name },
-    JWT_SECRET,
-    { expiresIn: '12h' }
-  );
-}
-
-function cookieOptions() {
-  return {
-    httpOnly: true,               // JS on the page can never read this cookie (XSS mitigation)
-    secure: process.env.NODE_ENV === 'production', // HTTPS-only in prod
-    sameSite: 'lax',              // blocks most cross-site POST forgery
-    maxAge: 12 * 60 * 60 * 1000,
-    path: '/',
-  };
-}
-
-// Populates req.user if a valid session cookie is present. Never blocks the request.
-function attachUser(req, res, next) {
-  const token = req.cookies?.[COOKIE_NAME];
-  if (!token) return next();
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-  } catch {
-    res.clearCookie(COOKIE_NAME, cookieOptions());
-  }
-  next();
-}
-
-function requireAuth(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: 'Sign in required.' });
-  next();
-}
-
-function requireRole(...roles) {
-  return (req, res, next) => {
-    if (!req.user) return res.status(401).json({ error: 'Sign in required.' });
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ error: 'You do not have access to this.' });
-    }
-    next();
-  };
-}
-
-// Minimal CSRF guard for cookie-authenticated state changes: same-origin check.
-// Belt-and-suspenders alongside SameSite=Lax cookies.
-function requireSameOrigin(req, res, next) {
-  const origin = req.get('origin');
-  if (!origin) return next(); // same-origin browser requests to a same-site API often omit Origin
-  const allowed = (process.env.ALLOWED_ORIGIN || '').split(',').map(s => s.trim());
-  if (allowed.includes(origin)) return next();
-  return res.status(403).json({ error: 'Cross-site request blocked.' });
-}
-
-module.exports = {
-  COOKIE_NAME,
-  signSession,
-  cookieOptions,
-  attachUser,
-  requireAuth,
-  requireRole,
-  requireSameOrigin,
-};
+createOrPromoteAdmin(email, password, name);
